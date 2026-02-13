@@ -2,3 +2,12 @@ node_modules/
 frontend/node_modules/
 .next/
 frontend/.next/
+
+# Python
+scraper/venv/
+*.log
+.DS_Store
+scraper/.env
+.env
+__pycache__/
+*.pyc
