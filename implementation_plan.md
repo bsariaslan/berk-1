@@ -42,11 +42,12 @@ graph TB
     end
     subgraph Backend
         D[Next.js API Routes] --> E[Karşılaştırma Motoru]
-        E --> F[SQLite / better-sqlite3]
+        E --> F[Supabase PostgreSQL]
     end
     subgraph Scraping
         G[Python + BeautifulSoup/Playwright] --> H[Scheduled Jobs - cron]
-        H --> F
+        H --> I[Supabase Client]
+        I --> F
     end
     Frontend --> Backend
 ```
@@ -55,14 +56,16 @@ graph TB
 |--------|-----------|-------|
 | **Frontend** | Next.js 14 (App Router) | SSR, API routes, tek proje |
 | **Styling** | Vanilla CSS | Tam kontrol, framework bağımsız |
-| **Database** | SQLite (better-sqlite3) | Hafif MVP, kurulum gerektirmez |
+| **Database** | Supabase (PostgreSQL) | Managed DB, real-time, ücretsiz tier, kolay deployment |
 | **Scraping** | Python + BeautifulSoup / Playwright | Scraping ekosistemi güçlü |
 | **Scheduler** | Cron job (sistem seviyesi) | Basit, güvenilir |
-| **Deployment** | Vercel (frontend) + VPS (scraper) | Ücretsiz tier mevcut |
+| **Deployment** | Vercel (frontend) + Supabase (DB) + VPS (scraper) | Tam entegre, ücretsiz tier mevcut |
 
 ---
 
 ## 🗺️ Fazlar
+
+> **Faz Sırası Değişikliği:** Scraping (Faz 5) en sona alındı. Uygulama önce seed data ile çalışır hale getirilecek, scraper'lar en son eklenecek. Bu sayede UI ve karşılaştırma motoru hızla test edilebilir.
 
 ### Faz 1 — Proje Altyapısı (Tahmini: 1-2 gün)
 
@@ -84,9 +87,10 @@ graph TB
 │   │   ├── SpendingForm.js
 │   │   ├── ResultsPanel.js
 │   │   └── CampaignCard.js
-│   └── lib/
-│       ├── db.js           # DB bağlantısı
-│       └── engine.js       # Karşılaştırma motoru
+│   ├── lib/
+│   │   ├── supabase.js     # Supabase client
+│   │   └── engine.js       # Karşılaştırma motoru
+│   └── .env.local          # Supabase credentials
 ├── scraper/                # Python scraper
 │   ├── main.py
 │   ├── banks/
@@ -95,9 +99,8 @@ graph TB
 │   │   ├── yapikredi.py
 │   │   ├── isbank.py
 │   │   └── finansbank.py
-│   └── db.py               # DB yazma
-├── data/
-│   └── campaigns.db        # SQLite veritabanı
+│   ├── supabase_client.py  # Supabase Python client
+│   └── .env                # Supabase credentials
 └── README.md
 ```
 
@@ -109,6 +112,7 @@ erDiagram
         int id PK
         string name
         string slug
+        string color
         string logo_url
         string website_url
     }
@@ -126,6 +130,7 @@ erDiagram
         string description
         string merchant_name
         string merchant_pattern
+        string discount_type
         float discount_rate
         float max_discount
         float min_spend
@@ -143,72 +148,27 @@ erDiagram
 **Tablo açıklamaları:**
 
 - **BANKS**: 5 banka bilgisi
+  - `color`: Banka renk kodu (UI'da kullanılacak — Akbank: #FF6600, Garanti: #00854A vb.)
 - **CARDS**: Her bankanın kredi kartları (Axess, Bonus vb.)
 - **CAMPAIGNS**: Kampanya detayları
   - `merchant_name`: Kampanyanın geçerli olduğu mağaza/site (örn: "Trendyol", "Migros")
   - `merchant_pattern`: Eşleştirme için pattern (örn: "trendyol", "trendyol.com")
-  - `discount_rate`: İndirim oranı (% veya TL)
-  - `max_discount`: Maksimum indirim tutarı
-  - `min_spend`: Minimum harcama tutarı
+  - `discount_type`: İndirim türü — `percentage` (yüzde) veya `fixed` (sabit TL)
+  - `discount_rate`: İndirim oranı (% ise 0.10 = %10, fixed ise TL miktarı)
+  - `max_discount`: Maksimum indirim tutarı (TL)
+  - `min_spend`: Minimum harcama tutarı (TL)
   - `conditions`: Ek koşullar (taksit, vade vb.)
 
----
-
-### Faz 2 — Kampanya Veri Toplama / Scraping (Tahmini: 3-4 gün)
-
-Bu faz projenin en kritik ve en kırılgan kısmı.
-
-#### 2.1 Scraper Mimarisi
-
-```mermaid
-flowchart LR
-    A[Cron Job - Günde 1x] --> B[main.py]
-    B --> C[akbank.py]
-    B --> D[garanti.py]
-    B --> E[yapikredi.py]
-    B --> F[isbank.py]
-    B --> G[finansbank.py]
-    C & D & E & F & G --> H[(campaigns.db)]
-    H --> I[Log & Alert]
-```
-
-#### 2.2 Her Banka İçin Scraper
-
-Her scraper modülü şu adımları takip eder:
-1. **Hedef URL belirleme** — Bankanın kampanya sayfası
-2. **Sayfa render** — Playwright ile JS-rendered sayfalar için
-3. **Veri çıkarma** — Kampanya başlığı, mağaza adı, indirim oranı, koşullar
-4. **Normalizasyon** — Farklı formatları ortak şemaya dönüştürme
-5. **DB'ye yazma** — Yeni kampanyalar ekle, süresi dolanları deaktive et
-
-#### 2.3 Scraping Hedefleri
-
-| Banka | Olası Kaynak URL'ler |
-|-------|---------------------|
-| Akbank | akbank.com/kampanyalar/kredi-karti |
-| Garanti | garantibbva.com.tr/kampanyalar |
-| Yapı Kredi | yapikredi.com.tr/kampanyalar |
-| İş Bankası | isbank.com.tr/kampanyalar |
-| Finansbank | qnbfinansbank.com/kampanyalar |
-
-> [!WARNING]
-> **Scraping Riskleri:**
-> - Banka siteleri yapı değiştirebilir → Her scraper'a error handling ve alert mekanizması eklenecek
-> - Rate limiting uygulanabilir → İstekler arası bekleme süresi konulacak
-> - Bazı kampanyalar sadece mobil uygulamada olabilir → Bunlar başlangıçta kapsam dışı
-> - ToS (Kullanım Koşulları) ihlali riski → Sadece public kampanya sayfaları taranacak
-
-#### 2.4 Fallback: Manuel Veri Girişi
-
-Scraping başarısız olursa veya doğrulama gerekirse:
-- Basit bir admin script ile JSON/CSV'den kampanya verisi yüklenebilecek
-- Bu MVP için yeterli bir fallback
+> **Supabase Setup:**
+> - Tablolar Supabase Dashboard → SQL Editor'da oluşturulacak
+> - Row Level Security (RLS) politikaları: Public read access (SELECT), authenticated write access (INSERT/UPDATE) scraper için
+> - Environment variables: `NEXT_PUBLIC_SUPABASE_URL` ve `NEXT_PUBLIC_SUPABASE_ANON_KEY` (frontend), `SUPABASE_SERVICE_ROLE_KEY` (scraper)
 
 ---
 
-### Faz 3 — Karşılaştırma Motoru (Tahmini: 2-3 gün)
+### Faz 2 — Karşılaştırma Motoru + API (Tahmini: 2-3 gün)
 
-#### 3.1 Kullanıcı Akışı
+#### 2.1 Kullanıcı Akışı
 
 ```mermaid
 flowchart TD
@@ -227,7 +187,16 @@ flowchart TD
     D2 --> D3[Kampanya detayları]
 ```
 
-#### 3.2 Eşleştirme Algoritması
+#### 2.2 API Tasarımı
+
+| Endpoint | Method | Açıklama |
+|----------|--------|----------|
+| `/api/banks` | GET | Tüm bankaları kartlarıyla birlikte döner (tek endpoint) |
+| `/api/compare` | POST | Karşılaştırma sonuçlarını döner |
+
+> **Not:** Toplam 5 banka, ~10 kart olduğu için ayrı bir `/api/cards` endpoint'ine gerek yok. `/api/banks` kartları da içerecek.
+
+#### 2.3 Eşleştirme Algoritması
 
 ```
 Kullanıcı girdisi: { yer: "Trendyol", tutar: 500 }
@@ -243,15 +212,15 @@ Kullanıcı girdisi: { yer: "Trendyol", tutar: 500 }
 5. En avantajlı kartı öner
 ```
 
-#### 3.3 Fuzzy Matching
+#### 2.4 Fuzzy Matching
 
-Kullanıcı "trendyol" yazarsa, "Trendyol", "trendyol.com", "Trendyol Ekspres" gibi kampanyaları eşleştirmeli. Basit bir string similarity (Levenshtein distance veya includes-based) yeterli olacak MVP için.
+Kullanıcı "trendyol" yazarsa, "Trendyol", "trendyol.com", "Trendyol Ekspres" gibi kampanyaları eşleştirmeli. MVP için `toLowerCase().includes()` yeterli. İleride gerekirse `fuse.js` eklenebilir.
 
 ---
 
-### Faz 4 — Frontend UI (Tahmini: 3-4 gün)
+### Faz 3 — Frontend UI (Tahmini: 3-4 gün)
 
-#### 4.1 Sayfa Yapısı
+#### 3.1 Sayfa Yapısı
 
 **Tek sayfalık uygulama** — 3 adımlı wizard akışı:
 
@@ -261,14 +230,14 @@ Kullanıcı "trendyol" yazarsa, "Trendyol", "trendyol.com", "Trendyol Ekspres" g
 | 2 | `SpendingForm` | Nerede ve ne kadar harcayacağını girer |
 | 3 | `ResultsPanel` + `CampaignCard` | Karşılaştırma sonuçları ve öneriler |
 
-#### 4.2 Tasarım İlkeleri
+#### 3.2 Tasarım İlkeleri
 
 - 🎨 **Modern & premium görünüm** — Glassmorphism, gradientler, subtle animasyonlar
 - 📱 **Mobile-first responsive** — Tüm cihazlarda mükemmel deneyim
 - ⚡ **Hızlı** — İstemci taraflı filtreleme, minimal API çağrısı
 - 🏦 **Banka renkleri** — Her banka kendi renk paleti ile temsil edilecek (Akbank: turuncu, Garanti: yeşil vb.)
 
-#### 4.3 UI Akış Detayı
+#### 3.3 UI Akış Detayı
 
 **Adım 1 — Kart Seçimi:**
 - Banka logoları grid'de gösterilir
@@ -289,9 +258,9 @@ Kullanıcı "trendyol" yazarsa, "Trendyol", "trendyol.com", "Trendyol Ekspres" g
 
 ---
 
-### Faz 5 — Polish, Test & Deploy (Tahmini: 2-3 gün)
+### Faz 4 — Polish, Test & Deploy (Tahmini: 2-3 gün)
 
-#### 5.1 Test Stratejisi
+#### 4.1 Test Stratejisi
 
 | Test Türü | Kapsam |
 |-----------|--------|
@@ -300,17 +269,77 @@ Kullanıcı "trendyol" yazarsa, "Trendyol", "trendyol.com", "Trendyol Ekspres" g
 | Browser test | Kullanıcı akışı (seçim → giriş → sonuç) |
 | Scraper test | Her banka scraper'ı için mock data |
 
-#### 5.2 Deployment
+#### 4.2 Deployment
 
 - **Frontend**: Vercel (Next.js native desteği, ücretsiz tier)
+  - Supabase env variables Vercel dashboard'a eklenecek
+- **Database**: Supabase (managed PostgreSQL, ücretsiz tier: 500MB storage, unlimited API requests)
+  - Otomatik backups, real-time subscriptions (isteğe bağlı)
 - **Scraper**: Herhangi bir VPS veya GitHub Actions (scheduled workflow)
-- **Database**: SQLite dosyası (küçük veri, ilişkisel DB yeterli)
+  - Supabase Service Role Key ile authenticated write access
 
-#### 5.3 SEO
+#### 4.3 SEO
 
 - Anlamlı sayfa başlığı ve meta description
 - Semantik HTML yapısı
 - Open Graph meta tag'leri
+
+---
+
+### Faz 5 — Kampanya Veri Toplama / Scraping (Tahmini: 3-4 gün)
+
+Bu faz projenin en kritik ve en kırılgan kısmı. Uygulama Faz 1-4'te seed data ile çalışır hale geldiği için, scraping bağımsız olarak geliştirilebilir.
+
+#### 5.1 Scraper Mimarisi
+
+```mermaid
+flowchart LR
+    A[Cron Job - Günde 1x] --> B[main.py]
+    B --> C[akbank.py]
+    B --> D[garanti.py]
+    B --> E[yapikredi.py]
+    B --> F[isbank.py]
+    B --> G[finansbank.py]
+    C & D & E & F & G --> H[supabase_client.py]
+    H --> I[(Supabase PostgreSQL)]
+    I --> J[Log & Alert]
+```
+
+#### 5.2 Her Banka İçin Scraper
+
+Her scraper modülü şu adımları takip eder:
+1. **Hedef URL belirleme** — Bankanın kampanya sayfası
+2. **Sayfa render** — Playwright ile JS-rendered sayfalar için
+3. **Veri çıkarma** — Kampanya başlığı, mağaza adı, indirim oranı, koşullar
+4. **Normalizasyon** — Farklı formatları ortak şemaya dönüştürme
+5. **DB'ye yazma** — Supabase Python client (`supabase-py`) ile:
+   - Yeni kampanyalar: `supabase.table('campaigns').insert(data).execute()`
+   - Süresi dolanlar: `supabase.table('campaigns').update({'is_active': False}).eq('end_date', '<', today).execute()`
+
+#### 5.3 Scraping Hedefleri
+
+| Banka | Olası Kaynak URL'ler |
+|-------|---------------------|
+| Banka | Olası Kaynak URL'ler |
+|-------|---------------------|
+| Akbank | axess.com.tr (Axess ve Wings programları) |
+| Garanti | bonus.com.tr (Bonus, Shop&Fly, Miles&Smiles) |
+| Yapı Kredi | worldcard.com.tr |
+| İş Bankası | maximum.com.tr |
+| Finansbank | cardfinans.com.tr |
+
+> [!WARNING]
+> **Scraping Riskleri:**
+> - Banka siteleri yapı değiştirebilir → Her scraper'a error handling ve alert mekanizması eklenecek
+> - Rate limiting uygulanabilir → İstekler arası bekleme süresi konulacak
+> - Bazı kampanyalar sadece mobil uygulamada olabilir → Bunlar başlangıçta kapsam dışı
+> - ToS (Kullanım Koşulları) ihlali riski → Sadece public kampanya sayfaları taranacak
+
+#### 5.4 Fallback: Manuel Veri Girişi
+
+Scraping başarısız olursa veya doğrulama gerekirse:
+- Basit bir admin script ile JSON/CSV'den kampanya verisi yüklenebilecek
+- Bu MVP için yeterli bir fallback
 
 ---
 
@@ -320,26 +349,26 @@ Kullanıcı "trendyol" yazarsa, "Trendyol", "trendyol.com", "Trendyol Ekspres" g
 gantt
     title MVP Geliştirme Planı
     dateFormat  YYYY-MM-DD
-    
+
     section Faz 1 - Altyapı
     Proje kurulumu        :f1a, 2026-02-14, 1d
-    DB şeması             :f1b, after f1a, 1d
-    
-    section Faz 2 - Scraping
-    Scraper altyapısı     :f2a, after f1b, 1d
-    5 banka scraper       :f2b, after f2a, 3d
-    
-    section Faz 3 - Motor
-    Karşılaştırma motoru  :f3a, after f2b, 2d
-    API endpoints         :f3b, after f3a, 1d
-    
-    section Faz 4 - Frontend
-    UI bileşenleri        :f4a, after f3b, 2d
-    Styling & animasyon   :f4b, after f4a, 2d
-    
-    section Faz 5 - Deploy
-    Test & fix            :f5a, after f4b, 1d
-    Deploy                :f5b, after f5a, 1d
+    DB şeması + seed data :f1b, after f1a, 1d
+
+    section Faz 2 - Motor + API
+    Karşılaştırma motoru  :f2a, after f1b, 2d
+    API endpoints         :f2b, after f2a, 1d
+
+    section Faz 3 - Frontend
+    UI bileşenleri        :f3a, after f2b, 2d
+    Styling & animasyon   :f3b, after f3a, 2d
+
+    section Faz 4 - Test & Deploy
+    Test & fix            :f4a, after f3b, 1d
+    Deploy                :f4b, after f4a, 1d
+
+    section Faz 5 - Scraping
+    Scraper altyapısı     :f5a, after f4b, 1d
+    5 banka scraper       :f5b, after f5a, 3d
 ```
 
 **Toplam tahmini süre: ~15 gün (2-3 hafta)**

@@ -54,7 +54,7 @@ Three tables with the following relationships:
 
 ```
 BANKS (5 banks)
-  ├── id, name, slug, logo_url, website_url
+  ├── id, name, slug, color, logo_url, website_url
   └── Has many → CARDS
 
 CARDS (~10 cards)
@@ -64,14 +64,15 @@ CARDS (~10 cards)
 CAMPAIGNS (active promotions)
   ├── id, card_id, title, description
   ├── merchant_name, merchant_pattern (for fuzzy matching)
-  ├── discount_rate, max_discount, min_spend
+  ├── discount_type (percentage | fixed), discount_rate, max_discount, min_spend
   ├── start_date, end_date, is_active
   └── conditions, source_url, scraped_at
 ```
 
 **Key Fields:**
 - `merchant_pattern`: Used for fuzzy matching user input (e.g., "trendyol" matches "Trendyol.com")
-- `discount_rate`: Percentage or fixed TL amount
+- `discount_type`: Whether discount is `percentage` or `fixed` TL
+- `discount_rate`: Percentage (0.10 = 10%) or fixed TL amount
 - `max_discount`: Cap on total discount
 - `min_spend`: Minimum purchase amount required
 
@@ -100,8 +101,7 @@ Input: { selectedCards: [1,2,3], merchant: "Trendyol", amount: 500 }
 │   │   ├── layout.js           # Root layout
 │   │   ├── globals.css         # Design system (glassmorphism, gradients)
 │   │   └── api/
-│   │       ├── banks/route.js      # GET banks list
-│   │       ├── cards/route.js      # GET cards by bank
+│   │       ├── banks/route.js      # GET banks list (includes cards)
 │   │       └── compare/route.js    # POST comparison logic
 │   ├── components/
 │   │   ├── BankSelector.js     # Bank selection grid
